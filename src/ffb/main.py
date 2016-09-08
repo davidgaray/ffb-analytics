@@ -68,12 +68,12 @@ class Picker:
         team = self.df.ix[picked_players]
         if self.already_picked_df is not None:
             team = pd.concat([self.already_picked_df, team])
-        score = self.score_team(team)
+        score = self.score_team(team, ordered_positions)
         selection = PlayerSelection(team, ordered_positions, score)
         self.lookup_previously_calculated[key] = selection
         return selection
 
-    def score_team(self, selected_players):
+    def score_team(self, selected_players, ordered_positions):
         ###
         # TODO: put serious thought into this method
         # This method was an afterthought, but may be the most essential component in a highly optimized draft.
@@ -98,25 +98,21 @@ class Picker:
             pos_df = pos_df.sort_values(by=self.score_column, ascending=False)
             starters = pos_df[:num_starters]
             backups = pos_df[num_starters:]
-
-
+            num_to_draft = ordered_positions.count(pos)
+            backup_value = 0
             if len(backups.index) == 0:
                 s_avg = .8 * starters[self.score_column].mean()
                 b_avg = 0
             else:
                 s_avg = .7 * starters[self.score_column].mean()
-                # print type(backups[self.score_column].tolist())
-                weighted_backup_pts = []
-                weight = 5
-                step = 1
+                # one backup is worth 70% of the value of a starter, two is worth 120%, three is worth 150%
+                cur_weight = .7
+                step = .2
                 for backups_pts in backups[self.score_column].tolist():
-                    weighted_backup_pts.extend([backups_pts] * weight)
+                    backup_value += backups_pts * cur_weight
+                    cur_weight -= step
 
-                weighted_avg = sum(weighted_backup_pts) / len(weighted_backup_pts)
-                b_avg = .3 * weighted_avg
-                # print '{} : avg={} '.format(weighted_backup_pts, weighted_avg)
-
-            total_points += (s_avg + b_avg) * num_starters
+            total_points += s_avg * num_starters + backup_value
         return total_points
 
     # Given a previous position_order, an array of selected positions, and a minimum index...
@@ -191,8 +187,8 @@ class PlayerSelection:
 # TODO: integrate into PlayerSelection as alternate way to construct
 def player_selection_from_df(picker, picks):
     team = picks
-    score = picker.score_team(team)
     ordered_positions = picks['playerposition'].tolist()
+    score = picker.score_team(team, ordered_positions)
     return PlayerSelection(team, ordered_positions, score)
 
 class StringCompare:
@@ -214,9 +210,19 @@ class StringCompare:
 # TODO: the following variables should all be params to the app
 # Live mode assumes all players who are not in the exclude_names.txt file are available for the next pick
 live_mode = True
-players_per_team = 16
-num_teams = 12
-initial_pick = 5
+players_per_team = 15
+num_teams = 10
+initial_pick = 10
+
+# naive_starter_order = ['K', 'QB', 'RB', 'WR', 'DST', 'WR', 'WR', 'RB', 'RB', 'RB', 'TE', 'QB', 'WR', 'WR', 'WR']
+# TODO(BUG): rearrange based on my team, must deduct the players I have already chosen as I may ultimately pick in a different order
+naive_starter_order = ['RB', 'WR', 'RB', 'WR', 'QB', 'TE', 'WR', 'RB', 'WR', 'DST', 'WR', 'WR', 'QB', 'RB', 'K']
+
+# This defines the number of positions attempted to swap at one time, if the value is set to two, it evaluates
+#  all meaningful scenarios where two positions are chosen in opposite order.  If the value is three or more, it will
+#  attempt to choose all meaningful sets of three positions, derive all permutations, and attempt to rearrange them
+#  in every order to determine if there's a more valuable order
+swap_order = [2, 2, 3, 2, 3, 2]
 
 # don't wrap on print
 pd.set_option('expand_frame_repr', False)
@@ -241,7 +247,9 @@ if my_team_list is not None and len(my_team_list) > 0:
     sc = StringCompare(my_team_list)
     my_team_df = df[df.apply(lambda x: sc.matches(x['playername']), axis=1)]
     min_swappable_index = len(my_team_list)
+    print '-------My Team is ----------'
     print my_team_df
+    print '----------------------------'
     my_team_len = len(my_team_df.index)
 
 exclude_list = pd.read_csv('../../data/exclude_names.txt')['playername'].tolist()
@@ -262,15 +270,12 @@ starter_count_map = OrderedDict([('TE', 1), ('QB', 1), ('WR', 3), ('RB', 2), ('D
 picker = Picker(df, starter_count_map)
 picks = picker.calc_snake_pick_numbers(num_teams, players_per_team, initial_pick)
 
-if my_team_len > 0:
+if live_mode:
     for i in range(0, min(my_team_len + 1, players_per_team)):
         picks[i] = 1
 print 'picks: {}'.format(picks)
 
 # TODO: why doesn't the optimizer find a good order given a poorly optimized starting order
-# naive_starter_order = ['K', 'QB', 'RB', 'WR', 'DST', 'WR', 'WR', 'RB', 'RB', 'RB', 'TE', 'QB', 'WR', 'WR', 'WR']
-conventional_wisdom = ['RB', 'WR', 'RB', 'WR', 'QB', 'TE', 'WR', 'RB', 'WR', 'DST', 'WR', 'WR', 'QB', 'RB', 'K']
-naive_starter_order = conventional_wisdom
 if my_team_df is not None:
     for pos in my_team_df['playerposition'].tolist():
         naive_starter_order.remove(pos)
@@ -279,11 +284,6 @@ if my_team_df is not None:
 
 print 'Evaluating {} positions: {}'.format(len(naive_starter_order), naive_starter_order)
 
-# This defines the number of positions attempted to swap at one time, if the value is set to two, it evaluates
-#  all meaningful scenarios where two positions are chosen in opposite order.  If the value is three or more, it will
-#  attempt to choose all meaningful sets of three positions, derive all permutations, and attempt to rearrange them
-#  in every order to determine if there's a more valuable order
-swap_order = [2, 2, 3, 2, 3, 2]
 # swap_order = [2]
 
 for max_swaps in swap_order:
@@ -292,10 +292,12 @@ for max_swaps in swap_order:
     print '---BEST Selection up to this point--- with score of {}'.format(picker.selection.score)
     print picker.selection.picked_players_df
     if live_mode:
-        pos = picker.selection.position_order_arr[my_team_len]
+        pos = picker.selection.position_order_arr[0]
         print '---TOP PROSPECTS FOR POS {}---'.format(pos)
         # filter already on my team players
-        avail_players_df = df[~(df.index.isin(my_team_df.index.tolist()))]
+        avail_players_df = df
+        if my_team_df is not None:
+            avail_players_df = df[~(df.index.isin(my_team_df.index.tolist()))]
         pos_df = avail_players_df[avail_players_df['playerposition'] == pos]
         if picker.rank_high_better:
             print pos_df.nlargest(10, picker.rank_column)
